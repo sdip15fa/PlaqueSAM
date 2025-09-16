@@ -841,43 +841,39 @@ def compute_metrics_for_box_detection(gt_json_path, pred_json_path, iou_threshol
         "false_negatives": total_fn,
     }
 
-def save_pred_gt_to_excel(pred_dict, gt_dict, out_path='pred_gt.xlsx', include_keys=False, strict=True): 
-    """ 
-    pred_dict, gt_dict: 形如 { (360, 13): 1, (360, 12): 1, (361, 0): 0 } 的字典 
-    out_path: 生成的 Excel 文件路径 include_keys: 是否把键也写为第三列（便于核对） 
-    strict: True 时要求两边键集合完全一致；False 时取并集，缺失处为 None 
-    """ 
-    pred_keys = set(pred_dict.keys()) 
-    gt_keys = set(gt_dict.keys())
+def save_pred_gt_to_excel(pred_dict, gt_dict, out_path='pred_gt.xlsx', include_keys=False):
+    """
+    将 pred 和 gt 对应关系保存到 Excel 中。
+    - pred_dict, gt_dict: {key: value} 形式，例如 { (360, 13): 1, (360, 12): 1 }
+    - out_path: Excel 文件路径
+    - include_keys: 是否保存键值列
+    修改后逻辑：
+    - 保留所有 gt 的键；
+    - pred 在没有对应键时置为空 (None)；
+    - 按 gt_dict 的键的顺序排序。
+    """
+    # 按 gt_dict 的键排序
+    keys = sorted(gt_dict.keys())
 
-    if strict and pred_keys != gt_keys:
-        missing_in_gt = sorted(pred_keys - gt_keys)
-        missing_in_pred = sorted(gt_keys - pred_keys)
-        raise ValueError(f'键集合不一致。仅在 pred 中的键: {missing_in_gt}; 仅在 gt 中的键: {missing_in_pred}')
+    gt_col = [gt_dict[k] for k in keys]             # 所有的 gt 必然存在
+    pred_col = [pred_dict.get(k, None) for k in keys]  # 没有 pred 的用 None 占位
 
-    # 统一的键顺序，保证 pred 与 gt 一一对应
-    keys = sorted(pred_keys | gt_keys)
-
-    pred_col = [pred_dict.get(k, None) for k in keys]
-    gt_col = [gt_dict.get(k, None) for k in keys]
-
-    data = {'pred': pred_col, 'gt': gt_col}  # 第一列 pred，第二列 gt
+    data = {'pred': pred_col, 'gt': gt_col}
     columns = ['pred', 'gt']
 
     if include_keys:
-        # 将键转成字符串，避免复杂对象在 Excel 中显示不友好
         key_strings = [str(k) for k in keys]
         data['key'] = key_strings
         columns.append('key')
 
     df = pd.DataFrame(data, columns=columns)
-    df.to_excel(out_path, index=False)  # 需要安装 openpyxl 或 xlsxwriter 作为引擎
+    df.to_excel(out_path, index=False)
     print(f'已保存到: {out_path}')
 
 # 使用示例
 if __name__ == "__main__":
     gt_json_path="/home/jinghao/projects/dental_plague_detection/dataset/2025_May_revised_training_split/test_2025_July_revised/test_ins_ToI.json"
-    pred_json_path="/home/jinghao/projects/dental_plague_detection/MaskDINO/detectron2/projects/PointSup/output/inference/coco_instances_results_score_over_0.50.json" 
+    pred_json_path="/home/jinghao/projects/dental_plague_detection/MaskDINO/detectron2/tools/output_maskrcnn_resizeShortEdge/inference/coco_instances_results_score_over_0.50.json" 
     
     box_gt_json_path="/data/dental_plague_data/PlaqueSAM_exps_models_results/logs_Eval_testset_wboxtemp_white_temp_noise0.0/saved_jsons/_box_gt_val_for_calculate_metrics.pt"
     box_pred_json_path="/data/dental_plague_data/PlaqueSAM_exps_models_results/logs_Eval_testset_wboxtemp_white_temp_noise0.0/saved_jsons/_box_pred_val_epoch_000_for_calculate_metrics.pt"
@@ -912,7 +908,7 @@ if __name__ == "__main__":
 
     count_values_three_plaque_levels(gt_grades)
 
-    save_pred_gt_to_excel(pred_grades, gt_grades, out_path='pred_gt_dental_plaque_PointSup.xlsx', include_keys=False, strict=False)
+    save_pred_gt_to_excel(pred_grades, gt_grades, out_path='pred_gt_dental_plaque_MaskRCNN_01.xlsx', include_keys=False)
 
     # import pdb; pdb.set_trace()
     # print(gt_json)
