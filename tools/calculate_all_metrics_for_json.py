@@ -69,11 +69,42 @@ def load_image_id2size(images):
         id2size[img['id']] = (img['height'], img['width'])
     return id2size
 
-def compute_tooth_grades(annotations, id2size):
+def get_patient_id(img_id, coco_json, cache={}):
+    """
+    根据 img_id 获取对应 patient_id
+    patient_id 根据 file_name 的 / 前缀分组，从 1 开始递增。
+    cache: 用于存储 prefix -> patient_id 的映射，保持一致性
+    """
+    # for handle the case when coco_json is None; for prediction res
+    if coco_json is None:
+        return -1 
+    
+    # 1. 在 images 中找到该 img_id 的 file_name
+    file_name = None
+    for item in coco_json["images"]:
+        if item["id"] == img_id:
+            file_name = item["file_name"]
+            break
+
+    if file_name is None:
+        raise ValueError(f"img_id {img_id} not found in coco_json['images']")
+
+    # 2. 获取 patient 前缀
+    prefix = file_name.split("/")[0]
+
+    # 3. 若首次遇到该 prefix，分配新的 patient_id
+    if prefix not in cache:
+        cache[prefix] = len(cache) + 1
+
+    return cache[prefix]
+
+def compute_tooth_grades(annotations, id2size, coco_json=None):
     # {(img_id, tooth_idx): {'plaque': float, 'tooth': float, 'caries': float}}
     stats = defaultdict(lambda: {'plaque':0.0, 'tooth':0.0, 'caries':0.0})
+    patient_id_cache = {}
     for anno in annotations:
         img_id = anno['image_id']
+        patiend_id = get_patient_id(img_id, coco_json, patient_id_cache)  # 仅用于缓存 patient_id
         cat_id = anno['category_id']
         tooth_idx = cat_id // 3
         type_idx = cat_id % 3  # 0:plaque, 1:tooth, 2:caries
@@ -82,11 +113,11 @@ def compute_tooth_grades(annotations, id2size):
         h, w = id2size[img_id]
         area = get_segmentation_area(anno['segmentation'], h, w)
         if type_idx == 0:
-            stats[(img_id, tooth_idx)]['plaque'] += area
+            stats[(patiend_id, img_id, tooth_idx)]['plaque'] += area
         elif type_idx == 1:
-            stats[(img_id, tooth_idx)]['tooth'] += area
+            stats[(patiend_id, img_id, tooth_idx)]['tooth'] += area
         elif type_idx == 2:
-            stats[(img_id, tooth_idx)]['caries'] += area
+            stats[(patiend_id, img_id, tooth_idx)]['caries'] += area
     # 计算分级
     result = {}
     for key, v in stats.items():
@@ -118,7 +149,7 @@ def calculate_acc(gt_grades, pred_grades):
     correct_tooth, total_tooth = 0, 0
     # 2. image-level
     image_to_teeth = {}
-    for (image_id, tooth_idx) in gt_grades:
+    for (patiend_id, image_id, tooth_idx) in gt_grades:
         image_to_teeth.setdefault(image_id, []).append(tooth_idx)
 
     correct_image, total_image = 0, 0
@@ -136,7 +167,7 @@ def calculate_acc(gt_grades, pred_grades):
             # changed to 0 / 1; does not split into three plaque levels
             if gt_grades[key] >= 1:
                 gt_grades[key] = 1
-            if pred_grades[key] >= 1:
+            if pred_grades[key] is not None and pred_grades[key] >= 1:
                 pred_grades[key] = 1
 
             if gt_grades[key] == pred_grades[key]:
@@ -212,7 +243,7 @@ def calculate_tooth_level_Sensitivity_Specificity(gt_grades, pred_grades):
     specificity = tn / (tn + fp) if (tn + fp) > 0 else 0
     
      # 输出结果
-    print(f"TP: {tp}, TN: {tn}, FP: {fp}, FN: {fn}")
+    # print(f"TP: {tp}, TN: {tn}, FP: {fp}, FN: {fn}")
     # print(f"Sensitivity: {sensitivity:.2f}")
     # print(f"Specificity: {specificity:.2f}")
     # 计算 precision 和 recall
@@ -224,6 +255,52 @@ def calculate_tooth_level_Sensitivity_Specificity(gt_grades, pred_grades):
 
     return sensitivity, specificity, f1
    
+def calculate_tooth_level_Sensitivity_Specificity_Accuracy(gt_grades, pred_grades):
+    accuracy_dict = calculate_acc(gt_grades, pred_grades)
+
+    # 初始化计数器
+    tp = tn = fp = fn = 0
+    # 遍历 GT 字典
+    for key, gt_value in gt_grades.items():
+        pred_value = pred_grades.get(key, None)  # 获取对应的 Pred 值，如果不存在默认为 None
+        if gt_value >= 1:
+            gt_value = 1
+        if pred_value is not None:
+            if pred_value >= 1:
+                pred_value = 1
+
+            if gt_value == 1 and pred_value == 1:  # True Positive
+                tp += 1
+            elif gt_value == 0 and pred_value == 0:  # True Negative
+                tn += 1
+            elif gt_value == 0 and pred_value == 1:  # False Positive
+                fp += 1
+            elif gt_value == 1 and pred_value == 0:  # False Negative
+                fn += 1
+        else:
+            # 没有预测出来时，按照实际类别处理
+            if gt_value == 1:
+                fn += 1  # 实际有病但没预测，假阴性
+            elif gt_value == 0:
+                tn += 1  # 实际无病但没预测，真阴性（有争议，但通常按这种方式处理）
+
+    # 计算 Sensitivity 和 Specificity
+    sensitivity = tp / (tp + fn) if (tp + fn) > 0 else 0
+    specificity = tn / (tn + fp) if (tn + fp) > 0 else 0
+    
+     # 输出结果
+    # print(f"TP: {tp}, TN: {tn}, FP: {fp}, FN: {fn}")
+    # print(f"Sensitivity: {sensitivity:.2f}")
+    # print(f"Specificity: {specificity:.2f}")
+    # 计算 precision 和 recall
+    precision = tp / (tp + fp) if (tp + fp) > 0 else 0
+    recall = tp / (tp + fn) if (tp + fn) > 0 else 0
+
+    # 计算 F1
+    f1 = (2 * precision * recall / (precision + recall)) if (precision + recall) > 0 else 0
+    
+    return sensitivity, specificity, f1, accuracy_dict['tooth_acc']
+
 
 # def calculate_Accuracy_three_classes_of_dental_plaque(gt_grades, pred_grades, classes=[0,1,2,3]):
 #     """
@@ -497,7 +574,7 @@ def calculate_Sensitivity_Specificity_per_category(gt_json, pred_json, tooth_id_
     stats = defaultdict(lambda: {"TP": 0, "TN": 0, "FP": 0, "FN": 0})
     gt_tooth_number = set()
     # Iterate through the ground truth and predictions
-    for (image_id, tooth_id), gt_label in gt_json.items():
+    for (patiend_id, image_id, tooth_id), gt_label in gt_json.items():
         gt_tooth_number.add(tooth_id_to_name[tooth_id])
         # Merge classes 1, 2, 3 into 1, keep 0 as is
         gt_label = 0 if gt_label == 0 else 1
@@ -870,14 +947,89 @@ def save_pred_gt_to_excel(pred_dict, gt_dict, out_path='pred_gt.xlsx', include_k
     df.to_excel(out_path, index=False)
     print(f'已保存到: {out_path}')
 
+
+def generate_patient_id_for_pred_grades(d1, d2):
+    # 建立：d2 中 key 的第二个元素 -> 第一个元素 的映射
+    map_second_to_first = {}
+    for k in d2.keys():
+        first, second, _ = k
+        map_second_to_first[second] = first
+
+    # 生成新的 d1
+    new_d1 = {}
+    for k, v in d1.items():
+        a, b, c = k
+        if a == -1 and b in map_second_to_first:
+            a = map_second_to_first[b]
+        new_d1[(a, b, c)] = v
+
+    return new_d1
+
+def bootstrap_ci_for_metric(gt_dict, pred_dict, metric_fn,
+                            n_boot=2000, ci=0.95, seed=42):
+    rng = np.random.default_rng(seed)
+
+    # 对齐键
+    keys = list(gt_dict.keys())
+    # gt = np.array([gt_dict[k] for k in keys])
+    # pred = np.array([pred_dict[k] for k in keys])
+    n = len(keys)
+    # 原始指标
+    orig = metric_fn(gt_dict, pred_dict)
+
+    # bootstrap
+    boot_vals = []
+    for _ in range(n_boot):
+        idx = rng.integers(0, n, n)
+        sampled_keys = [keys[i] for i in idx]
+        # bootstrap GT（始终有值）
+        gt_boot = {k: gt_dict[k] for k in sampled_keys}
+        # bootstrap PRED（可能没有 → 自动补 None）
+        pred_boot = {k: pred_dict.get(k, None) for k in sampled_keys}
+        boot_vals.append(metric_fn(gt_boot, pred_boot))
+
+    boot_vals = np.array(boot_vals)
+    low = np.percentile(boot_vals, (1 - ci) / 2 * 100, axis=0)
+    high = np.percentile(boot_vals, (1 + ci) / 2 * 100, axis=0)
+
+    return {
+        "original": {
+            "sensitivity": float(orig[0]),
+            "specificity": float(orig[1]),
+            "f1": float(orig[2]),
+            "accuracy": float(orig[3])
+        },
+        "ci95": {
+            "sensitivity": [float(low[0]), float(high[0])],
+            "specificity": [float(low[1]), float(high[1])],
+            "f1": [float(low[2]), float(high[2])],
+            "accuracy": [float(low[3]), float(high[3])]
+        }
+    }
+
+def print_bootstrap_result(result):
+    orig = result["original"]
+    ci = result["ci95"]
+
+    for metric in ["sensitivity", "specificity", "f1", "accuracy"]:
+        print(f"{metric}: {orig[metric]:.4f}")
+        print(f"{metric} 95% 置信区间: {ci[metric][0]:.4f} ~ {ci[metric][1]:.4f}\n")
+
 # 使用示例
 if __name__ == "__main__":
     gt_json_path="/home/jinghao/projects/dental_plague_detection/dataset/2025_May_revised_training_split/test_2025_July_revised/test_ins_ToI.json"
-    pred_json_path="/home/jinghao/projects/dental_plague_detection/MaskDINO/detectron2/tools/output_maskrcnn_resizeShortEdge/inference/coco_instances_results_score_over_0.50.json" 
+    pred_json_path="/data/dental_plague_data/PlaqueSAM_exps_models_results/logs_Eval_testset_wboxtemp_white_temp_noise0.0/saved_jsons/_pred_val_epoch_000_postprocessed.json" 
     
     box_gt_json_path="/data/dental_plague_data/PlaqueSAM_exps_models_results/logs_Eval_testset_wboxtemp_white_temp_noise0.0/saved_jsons/_box_gt_val_for_calculate_metrics.pt"
     box_pred_json_path="/data/dental_plague_data/PlaqueSAM_exps_models_results/logs_Eval_testset_wboxtemp_white_temp_noise0.0/saved_jsons/_box_pred_val_epoch_000_for_calculate_metrics.pt"
     
+    # for abalation exps for w/wo template
+    # gt_json_path="/home/jinghao/projects/dental_plague_detection/dataset/2025_template_ablation/dataset_10_kids/w_template_coco_format_for_test/test_ins_ToI.json"
+    # pred_json_path="/home/jinghao/projects/dental_plague_detection/PlaqueSAM/logs_Eval_abalation_exps_w_template_testset_10_kids_wo_image_classifier/saved_jsons/_pred_val_epoch_000_postprocessed.json" 
+    
+    # box_gt_json_path="/home/jinghao/projects/dental_plague_detection/PlaqueSAM/logs_Eval_abalation_exps_w_template_testset_10_kids_wo_image_classifier/saved_jsons/_box_gt_val_for_calculate_metrics.pt"
+    # box_pred_json_path="/home/jinghao/projects/dental_plague_detection/PlaqueSAM/logs_Eval_abalation_exps_w_template_testset_10_kids_wo_image_classifier/saved_jsons/_box_pred_val_epoch_000_for_calculate_metrics.pt"
+
     # box_gt_json_path="/home/jinghao/projects/dental_plague_detection/Self-PPD/logs_Eval_testset_revised_2025_July_512_ToI_3rd_9masklayer_woboxTemp/saved_jsons/_box_gt_val_for_calculate_metrics.pt"
     # box_pred_json_path="/home/jinghao/projects/dental_plague_detection/Self-PPD/logs_Eval_testset_revised_2025_July_512_ToI_3rd_9masklayer_woboxTemp/saved_jsons/_box_pred_val_epoch_000_for_calculate_metrics.pt"
     print(compute_metrics_for_box_detection(box_gt_json_path, box_pred_json_path))
@@ -902,20 +1054,22 @@ if __name__ == "__main__":
     images = gt_json['images']
     id2size = load_image_id2size(images)
 
-    gt_grades = compute_tooth_grades(gt_json['annotations'], id2size)
+    gt_grades = compute_tooth_grades(gt_json['annotations'], id2size, gt_json)
+    # import pdb; pdb.set_trace()
     # pred_json 只有annotations
     pred_grades = compute_tooth_grades(pred_json, id2size)
-
+    pred_grades = generate_patient_id_for_pred_grades(pred_grades, gt_grades)
+    
     count_values_three_plaque_levels(gt_grades)
 
     save_pred_gt_to_excel(pred_grades, gt_grades, out_path='pred_gt_dental_plaque_MaskRCNN_01.xlsx', include_keys=False)
 
-    # import pdb; pdb.set_trace()
     # print(gt_json)
     # print(gt_grades)
     # print(pred_grades)
     # save_grade_per_tooth_to_excel(gt_grades, pred_grades, gt_json, excel_path="output.xlsx")
     # statistic_plot_and_save_category_counts(gt_grades)
+
     print(calculate_Accuracy_Sensitivity_Specificity_metrics_three_classes_of_dental_plaque(gt_grades, pred_grades))
 
     accs = calculate_acc(gt_grades, pred_grades)
@@ -952,17 +1106,23 @@ if __name__ == "__main__":
     print(values)
     print(line)
     
-    # for 计算 C.I. 95%
-    print('pred sample_size: ', len(pred_grades))
-    print('gt sample_size: ', len(gt_grades))
-    sample_size = len(pred_grades)  # 样本量
-    metric_for_ci_95_dict = {
-        'mIoU': overall_mIoU_plaque,
-        'Sensitivity': sensitivity_per_tooth,
-        'Specificity': specificity_per_tooth,
-        'Accuracy': acc_tooth,
-        'F1': f1_per_tooth
-    } 
-    ci_95_results = calculate_ci_95_for_metrics(metric_for_ci_95_dict, sample_size)
-    for metric, ci in ci_95_results.items():
-        print(f"{metric} 95% 置信区间: {ci[0]:.4f} ~ {ci[1]:.4f}")
+    # import pdb; pdb.set_trace()
+
+    # for 计算 standard C.I. 95%
+    # print('pred sample_size: ', len(pred_grades))
+    # print('gt sample_size: ', len(gt_grades))
+    # sample_size = len(pred_grades)  # 样本量
+    # metric_for_ci_95_dict = {
+    #     'mIoU': overall_mIoU_plaque,
+    #     'Sensitivity': sensitivity_per_tooth,
+    #     'Specificity': specificity_per_tooth,
+    #     'Accuracy': acc_tooth,
+    #     'F1': f1_per_tooth
+    # } 
+    # ci_95_results = calculate_ci_95_for_metrics(metric_for_ci_95_dict, sample_size)
+    # for metric, ci in ci_95_results.items():
+    #     print(f"{metric} 95% 置信区间: {ci[0]:.4f} ~ {ci[1]:.4f}")
+
+    # for bootstrap C.I. 95%
+    print_bootstrap_result(bootstrap_ci_for_metric(gt_grades, pred_grades, calculate_tooth_level_Sensitivity_Specificity_Accuracy))
+    
