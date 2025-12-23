@@ -1,7 +1,5 @@
-# Self-PPD / Tri-P
-Don't let any dental plaque escape from adolescent oral images
-=======
-## SAM 2: Segment Anything in Images and Videos
+
+## PlaqueSAM
 
 **[AI at Meta, FAIR](https://ai.meta.com/research/)**
 
