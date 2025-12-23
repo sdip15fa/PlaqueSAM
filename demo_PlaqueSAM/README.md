@@ -34,3 +34,15 @@ JPEGImages/
 3. Image Files: **Each patient folder must contain exactly 6 .jpg images**. The filenames can be customized but must have the .jpg extension.
 4. The resolution and size of the images can vary, but they must be valid .jpg files.
 5. Avoid using special characters (e.g., spaces, non-ASCII characters) in folder and file names. Use letters, numbers, and underscores instead.
+
+## Inference Start
+ 
+```shell
+1. python tools/gene_pseudo_gt_for_inference.py
+```
+
+2. 修改数据集根路径 in sam2.1_hiera_t+_MOSE_finetune_infer.yaml line 15 "dataset_root_path"
+
+```shell
+2. run_infer.sh
+```
