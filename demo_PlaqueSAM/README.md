@@ -63,19 +63,19 @@ python tools/gene_pseudo_gt_for_inference.py
 
 #### Step 2 — Update configuration file
 
-Open sam2.1_hiera_t+_MOSE_finetune_infer.yaml and modify:
+Open `sam2/configs/sam2.1_training/sam2.1_hiera_t+_MOSE_finetune_infer.yaml` and modify:
 
-- Line 15 — dataset_root_path
+- Line 15 — `dataset_root_path`
 
   Set to the absolute path of your JPEGImages/ directory.
 
-- Line 486 — checkpoint_path
+- Line 486 — `checkpoint_path`
   
-Path to your PlaqueSAM model checkpoint.
+  Path to your PlaqueSAM model checkpoint.
 
-- Line 492 — experiment_log_dir
+- Line 492 — `experiment_log_dir`
   
-Path to save inference results.
+  Path to save inference results.
 
 #### Step 3 — Run inference script
 
